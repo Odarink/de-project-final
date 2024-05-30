@@ -1,104 +1,45 @@
+import pandas as pd
 import psycopg2
 import vertica_python
-from typing import List, Dict, Any
 from datetime import datetime
-from pydantic import BaseModel
 
 
-
-class TransactionModel(BaseModel) :
-    operation_id: str
-    account_number_from: int
-    account_number_to: int
-    currency_code: int
-    country: str
-    status: str
-    transaction_type: str
-    amount: int
-    transaction_dt: datetime
-
-
-class CurrenciesModel(BaseModel) :
-    date_update: datetime
-    currency_code: int
-    currency_code_with: int
-    currency_with_div: float
-
-
-
-
-
-class DataMigrator:
-    def __init__(self, pg_config: Dict[str, str], vertica_config: Dict[str, str], data_model) :
+class DataMigrator :
+    def __init__(self, pg_config, vertica_config) :
         self.pg_config = pg_config
         self.vertica_config = vertica_config
-        self.data_model = data_model
 
-    def generate_select_query(self, table_name: str, fields: dict, cast_dict: dict, date_column_name: str) -> str :
-        select_fields = []
-        for field_name, field_type in fields.items() :
-            # Используем словарь cast_dict для преобразования типов данных Pydantic в типы данных PostgreSQL
-            pg_type = cast_dict.get(field_type, 'text')  # Используем 'text' по умолчанию
+    def fetch_data_from_postgres(self, date: str, table_name: str, date_column: str) -> pd.DataFrame :
+        with psycopg2.connect(
+            dbname=self.pg_config['dbname'],
+            user=self.pg_config['user'],
+            password=self.pg_config['password'],
+            host=self.pg_config['host'],
+            port=self.pg_config['port']
+        ) as conn:
+            query = f"""
+                SELECT * 
+                FROM {table_name} 
+                WHERE {date_column}::date = '{date}'::date
+            """
+            df = pd.read_sql(query, conn)
+            return df
 
-            select_fields.append(f"CAST({field_name} AS {pg_type}) AS {field_name}")
-
-        select_clause = ", ".join(select_fields)
-        query = f"""
-        SELECT 
-        {select_clause} 
-        FROM {table_name} as t
-        WHERE DATE_TRUNC('day', {date_column_name}) = %s;
-        """
-        return query
-
-    def fetch_data_from_postgres(self, date: datetime, table_name: str, date_column_name: str) -> List[BaseModel]:
-        dict_cast = {
-            'int' : 'integer',
-            'float' : 'float',
-            'datetime' : 'timestamp',
-            'str' : 'text'
-        }
-        fields_dict = self.data_model.__annotations__
-        fields_str_dict = {field_name : field_type.__name__ for field_name, field_type in fields_dict.items()}
-
-        query = self.generate_select_query(table_name=table_name,
-                                           fields=fields_str_dict,
-                                           cast_dict=dict_cast,
-                                           date_column_name=date_column_name)
-
-        connection = psycopg2.connect(**self.pg_config)
-        cursor = connection.cursor()
-        cursor.execute(query, (date,))
-        rows = cursor.fetchall()
-        columns = [desc[0] for desc in cursor.description]
-        data = [self.data_model(**dict(zip(columns, row))) for row in rows]
-
-        cursor.close()
-        connection.close()
-
-        return data
-
-    def load_data_to_vertica(self, data: list, table_name: str) :
-        connection = vertica_python.connect(**self.vertica_config)
-        cursor = connection.cursor()
-
-        if not data :
-            print("No data to insert.")
-            return
-
-        columns = data[0].dict().keys()
-        column_list = ', '.join(columns)
-        values_placeholder = ', '.join([f":{col}" for col in columns])
-        insert_query = f"INSERT INTO {table_name} ({column_list}) VALUES ({values_placeholder})"
-
-        cursor.executemany(insert_query, [item.dict() for item in data])
-        connection.commit()
-
-        cursor.close()
-        connection.close()
-
-    def migrate_data(self, date: datetime, pg_table_name: str, vertica_table_name: str, date_column_name: str) :
-        data = self.fetch_data_from_postgres(date, pg_table_name, date_column_name)
-        self.load_data_to_vertica(data, vertica_table_name, )
+    def load_data_to_vertica(self, df: pd.DataFrame, date_column: str, date_value: str, vertica_table_name: str) :
 
 
+        with vertica_python.connect(**self.vertica_config) as conn:
+            with conn.cursor() as cur:
+                # Удаление старых данных
+                delete_query = f"DELETE FROM {vertica_table_name} WHERE {date_column}::date = '{date_value}'::date"
+                cur.execute(delete_query)
+                # Загрузка новых данных
+                columns = df.columns.tolist()
+                insert_query = f"INSERT INTO {vertica_table_name} ({', '.join(columns)}) VALUES ({', '.join(['%s' for _ in columns])})"
+
+                for row in df.itertuples(index=False, name=None) :
+                    cur.execute(insert_query, row)
+
+    def migrate_data(self, date: str, pg_table_name: str, vertica_table_name: str, date_column: str) :
+        data = self.fetch_data_from_postgres(date, pg_table_name, date_column)
+        self.load_data_to_vertica(data, date_column, date, vertica_table_name)

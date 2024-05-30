@@ -1,15 +1,9 @@
-import contextlib
-from typing import Dict, List, Optional
-
-from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.decorators import dag, task
 from airflow.operators.empty import EmptyOperator
-
-from airflow.decorators import dag
-
+from stg_load_from_postgres import DataMigrator
 import pendulum
-from raw_pydantic_stg_load_from_postgres import DataMigrator, TransactionModel, CurrenciesModel
 
+# Конфигурация подключения
 pg_config = {
     'dbname': 'db1',
     'user': 'student',
@@ -26,26 +20,41 @@ vertica_config = {'host': 'vertica.tgcloudenv.ru',
              # Вначале автокоммит понадобится, а позже решите сами.
                          'autocommit': True
 }
+
 @dag(
-    #   schedule_interval='0/15 * * * *',  # Задаем расписание выполнения дага - каждый 15 минут.
-    schedule_interval=None,
-    start_date=pendulum.datetime(2022, 10, 1, tz="UTC"),  # Дата начала выполнения дага. Можно поставить сегодня.
-    catchup=False,  # Нужно ли запускать даг за предыдущие периоды (с start_date до сегодня) - False (не нужно).
-    tags=['final', 'stg', 'origin', 'example'],  # Теги, используются для фильтрации в интерфейсе Airflow.
-    is_paused_upon_creation=True) # Остановлен/запущен при появлении. Сразу запущен.)
+    schedule_interval='0 0 * * *',
+    start_date=pendulum.datetime(2022, 10, 1, tz="UTC"),
+    catchup=False,
+    tags=['final', 'stg', 'origin', 'example'],
+    is_paused_upon_creation=True
+)
 def dag_load_data_to_staging():
     start = EmptyOperator(task_id='start')
     end = EmptyOperator(task_id='end')
-    @task(task_id="load_group_log_postgres")
-    def load_group_log_postgres():
-        # создаем экземпляр класса, в котором реализована логика.
-        transaction_loader = DataMigrator(pg_config, vertica_config, TransactionModel)
-        transaction_loader.migrate_data('2022-10-09',
-                                        'public.transactions',
-                                        'STV2024031257__STAGING.stg_transactions',
-                                        'transaction_dt')  # Вызываем функцию, которая перельет данные.
 
-    start >> [load_group_log_postgres] >> end
+    @task(task_id="load_transactions")
+    def load_transactions():
+        transaction_loader = DataMigrator(pg_config, vertica_config)
+        transaction_loader.migrate_data(
+            '2022-10-09',
+            'public.transactions',
+            'STV2024031257__STAGING.stg_transactions',
+            'transaction_dt'
+        )
 
+    @task(task_id="load_currencies")
+    def load_currencies():
+        currencies_loader = DataMigrator(pg_config, vertica_config)
+        currencies_loader.migrate_data(
+            '2022-10-09',
+            'public.currencies',
+            'STV2024031257__STAGING.stg_сurrencies',
+            'date_update'
+        )
 
-_ = dag_load_data_to_staging()
+    load_transactions_task = load_transactions()
+    load_currencies_task = load_currencies()
+
+    start >> [load_transactions_task, load_currencies_task] >> end
+
+dag_instance = dag_load_data_to_staging()
