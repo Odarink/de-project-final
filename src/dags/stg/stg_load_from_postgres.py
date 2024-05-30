@@ -36,7 +36,6 @@ class DataMigrator :
                 # Загрузка новых данных
                 columns = df.columns.tolist()
                 insert_query = f"INSERT INTO {vertica_table_name} ({', '.join(columns)}) VALUES ({', '.join(['%s' for _ in columns])})"
-
                 for row in df.itertuples(index=False, name=None) :
                     cur.execute(insert_query, row)
 

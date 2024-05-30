@@ -5,7 +5,6 @@ CREATE TABLE STV2024031257__DWH.dwh_global_metrics
 	cnt_transactions integer NULL,
 	avg_transactions_per_account numeric(15,2) NULL,
 	cnt_accounts_make_transactions integer NULL,
-	currency_from integer NULL,
 	amount_total numeric(15,2) NULL,
     CONSTRAINT stg_transactions_pkey PRIMARY KEY (date_update)
 )
